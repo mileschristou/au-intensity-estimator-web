@@ -10,7 +10,7 @@ import {
 } from './face_align.js';
 
 import {
-  initModel, predictNamed, getAUNames, isReady,
+  initModel, predictNamed, getAUNames, isReady, setDeviceLostHandler,
 } from './inference.js';
 
 import { downloadCSV, downloadXLSX } from './export.js';
@@ -133,6 +133,18 @@ async function init() {
 
     setStatus('Loading MediaPipe…');
     await initFaceAligner('VIDEO');
+
+    // Auto-fallback to CPU if the WebGPU device is lost mid-session
+    setDeviceLostHandler(() => {
+      console.warn('[ui] GPU device lost — falling back to CPU');
+      provider = 'wasm';
+      setProviderButtons('wasm');
+      btnGpu.disabled = true;
+      btnGpu.title    = 'GPU device was lost — reload the page to retry WebGPU';
+      setStatus('GPU device lost — switched to CPU');
+      const m = modelUrls();
+      initModel(m.modelUrl, m.configUrl, 'wasm').catch(console.error);
+    });
 
     setStatus('Loading ResNet-18 (49 MB)…');
     const m = MODELS['resnet18'];
@@ -312,7 +324,21 @@ async function webcamLoop(now) {
 
   if (webcamVideo.readyState >= 2) {
     ctx.drawImage(webcamVideo, 0, 0, CANVAS_W, CANVAS_H);
-    await processFrame(webcamVideo, webcamVideo.videoWidth, webcamVideo.videoHeight, now);
+    try {
+      await processFrame(webcamVideo, webcamVideo.videoWidth, webcamVideo.videoHeight, now);
+    } catch (err) {
+      console.warn('[ui] processFrame error:', err);
+      // If GPU session crashes mid-run, trigger fallback and keep the loop alive
+      if (provider === 'webgpu') {
+        provider = 'wasm';
+        setProviderButtons('wasm');
+        btnGpu.disabled = true;
+        btnGpu.title    = 'WebGPU session crashed — reload the page to retry';
+        setStatus('WebGPU crashed — switched to CPU');
+        const m = modelUrls();
+        await initModel(m.modelUrl, m.configUrl, 'wasm').catch(console.error);
+      }
+    }
   }
 
   requestAnimationFrame(webcamLoop);

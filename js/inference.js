@@ -28,6 +28,11 @@ ort.env.wasm.wasmPaths =
  *
  * Returns true if a high-limit device was successfully created.
  */
+let _deviceLostHandler = null;  // () => void — called if the GPU device is lost
+
+/** Register a callback for GPU device loss (e.g. to auto-switch to CPU). */
+export function setDeviceLostHandler(fn) { _deviceLostHandler = fn; }
+
 async function _prepareWebGPUDevice() {
   if (!('gpu' in navigator)) return false;
   try {
@@ -42,6 +47,16 @@ async function _prepareWebGPUDevice() {
       requiredLimits: {
         maxStorageBuffersPerShaderStage: adapterMax,
       },
+    });
+
+    // If the GPU device is lost (driver crash, power event, etc.) tear down the
+    // session and call the registered handler so the UI can fall back to CPU.
+    device.lost.then(info => {
+      console.warn('[inference] WebGPU device lost:', info.message);
+      _session  = null;
+      _provider = null;
+      ort.env.webgpu.device = undefined;
+      _deviceLostHandler?.();
     });
 
     // ORT picks up this device for all subsequent WebGPU sessions
@@ -107,6 +122,12 @@ export async function initModel(
   CROP      = _config.crop   ?? 224;
   NORM_MEAN = _config.norm_mean ?? [0.485, 0.456, 0.406];
   NORM_STD  = _config.norm_std  ?? [0.229, 0.224, 0.225];
+
+  // If switching away from WebGPU (e.g. falling back to CPU), clear any dead
+  // GPU device reference so ORT doesn't try to use it when creating the new session.
+  if (provider !== 'webgpu' && ort.env.webgpu?.device) {
+    ort.env.webgpu.device = undefined;
+  }
 
   // For WebGPU: pre-create a device with maximal storage-buffer limits so ORT's
   // Concat and other kernels aren't blocked by the conservative default of 8.
