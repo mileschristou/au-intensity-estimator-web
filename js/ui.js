@@ -563,16 +563,17 @@ async function switchProvider(p) {
     setStatus(`Running on ${label}`);
   } catch (err) {
     console.warn(`[ui] ${label} failed:`, err);
+    const errMsg = err?.message ?? String(err);
     if (p === 'webgpu') {
       btnGpu.disabled = true;
-      btnGpu.title    = 'WebGPU failed on this device';
+      btnGpu.title    = `WebGPU failed: ${errMsg}`;
     } else if (p === 'webgl') {
       btnWebgl.disabled = true;
-      btnWebgl.title    = 'WebGL failed on this device';
+      btnWebgl.title    = `WebGL failed: ${errMsg}`;
     }
     // Restore previous provider buttons and session
     setProviderButtons(provider);
-    setStatus(`${label} unavailable — staying on ${PROVIDER_LABELS[provider]}`);
+    setStatus(`${label} failed: ${errMsg.slice(0, 120)}`);
     const m = modelUrls();
     await initModel(m.modelUrl, m.configUrl, provider);
   }
