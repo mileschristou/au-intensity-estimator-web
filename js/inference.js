@@ -19,6 +19,41 @@ import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/o
 ort.env.wasm.wasmPaths =
   'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/';
 
+// ─── WebGPU device setup ──────────────────────────────────────────────────────
+
+/**
+ * Create a WebGPU device with the highest storage-buffer limits the adapter
+ * supports, then register it with ORT so its kernels (e.g. Concat) can use
+ * more than the conservative WebGPU default of 8 buffers per shader stage.
+ *
+ * Returns true if a high-limit device was successfully created.
+ */
+async function _prepareWebGPUDevice() {
+  if (!('gpu' in navigator)) return false;
+  try {
+    const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' })
+                 ?? await navigator.gpu.requestAdapter();
+    if (!adapter) return false;
+
+    // Ask for the adapter's actual maximum — most discrete GPUs support 12–16.
+    // The WebGPU spec default is only 8, which is too low for ORT's Concat kernel.
+    const adapterMax = adapter.limits.maxStorageBuffersPerShaderStage ?? 8;
+    const device = await adapter.requestDevice({
+      requiredLimits: {
+        maxStorageBuffersPerShaderStage: adapterMax,
+      },
+    });
+
+    // ORT picks up this device for all subsequent WebGPU sessions
+    ort.env.webgpu.device = device;
+    console.log(`[inference] WebGPU device ready — maxStorageBuffersPerShaderStage: ${adapterMax}`);
+    return true;
+  } catch (e) {
+    console.warn('[inference] Could not create high-limit WebGPU device:', e);
+    return false;
+  }
+}
+
 // ─── Module state ─────────────────────────────────────────────────────────────
 
 let _session   = null;   // ort.InferenceSession
@@ -72,6 +107,12 @@ export async function initModel(
   CROP      = _config.crop   ?? 224;
   NORM_MEAN = _config.norm_mean ?? [0.485, 0.456, 0.406];
   NORM_STD  = _config.norm_std  ?? [0.229, 0.224, 0.225];
+
+  // For WebGPU: pre-create a device with maximal storage-buffer limits so ORT's
+  // Concat and other kernels aren't blocked by the conservative default of 8.
+  if (provider === 'webgpu' && !ort.env.webgpu?.device) {
+    await _prepareWebGPUDevice();
+  }
 
   // Build session options
   const sessionOptions = {
