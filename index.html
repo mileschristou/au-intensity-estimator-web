@@ -508,6 +508,10 @@
       color: var(--red);
       background: rgba(255,51,85,.07);
     }
+    .export-btn.record:not(:disabled) { color: var(--green); border-color: var(--green-dim); }
+    .export-btn.record:not(:disabled):hover { background: rgba(0,230,118,.1); }
+    .export-btn.recording { color: var(--red) !important; border-color: var(--red) !important; animation: blink .9s step-end infinite; }
+    @keyframes blink { 50% { opacity: .4; } }
 
     /* hidden util */
     .hidden { display: none !important; }
@@ -607,9 +611,12 @@
     <span id="frame-count">Frames: 0</span>
     <span id="status-text">Loading…</span>
     <div class="export-btns">
-      <button class="export-btn" id="btn-csv"   disabled>↓ CSV</button>
-      <button class="export-btn" id="btn-xlsx"  disabled>↓ XLSX</button>
-      <button class="export-btn danger" id="btn-clear" disabled>Clear</button>
+      <button class="export-btn record" id="btn-record">● Record</button>
+      <button class="export-btn"        id="btn-pause"  disabled>⏸ Pause</button>
+      <button class="export-btn danger" id="btn-stop"   disabled>■ Stop</button>
+      <button class="export-btn"        id="btn-csv"    disabled>↓ CSV</button>
+      <button class="export-btn"        id="btn-xlsx"   disabled>↓ XLSX</button>
+      <button class="export-btn danger" id="btn-clear"  disabled>Clear</button>
     </div>
   </footer>
 

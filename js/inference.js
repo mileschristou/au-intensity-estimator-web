@@ -101,7 +101,8 @@ const _resizeCtx    = _resizeCanvas.getContext('2d', { willReadFrequently: true 
 export async function initModel(
   modelUrl,
   configUrl,
-  provider = 'wasm'
+  provider = 'wasm',
+  configInline = null     // optional inline fallback config (used if configUrl fetch fails)
 ) {
   // Reload if provider or model changed
   if (_session && _provider === provider && _modelUrl === modelUrl) return _config;
@@ -112,10 +113,18 @@ export async function initModel(
   const prevProvider = _provider;
   const prevConfig   = _config;
 
-  // Load config first (small JSON, fast)
+  // Load config — fall back to inline if the remote fetch fails
   const res = await fetch(configUrl);
-  if (!res.ok) throw new Error(`Failed to fetch config: ${configUrl}`);
-  _config = await res.json();
+  if (!res.ok) {
+    if (configInline) {
+      console.warn(`[inference] Config fetch failed; using inline fallback for ${modelUrl}`);
+      _config = configInline;
+    } else {
+      throw new Error(`Failed to fetch config: ${configUrl}`);
+    }
+  } else {
+    _config = await res.json();
+  }
 
   // Apply preprocessing constants from config
   RESIZE    = _config.resize ?? 256;
@@ -240,7 +249,12 @@ export async function predict(alignedCanvas) {
 
   // Output tensor is named 'au_intensities' (set in export_onnx.py)
   const output = results['au_intensities'];
-  return output.data.slice();   // Float32Array copy
+  if (!output) {
+    const keys = Object.keys(results);
+    throw new Error(`Output 'au_intensities' not found. Available: ${keys.join(', ')}`);
+  }
+  const data = output.data instanceof Float32Array ? output.data : new Float32Array(output.data);
+  return data.slice();   // Float32Array copy
 }
 
 /**

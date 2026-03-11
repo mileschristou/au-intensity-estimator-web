@@ -19,6 +19,15 @@ import { downloadCSV, downloadXLSX } from './export.js';
 
 const HF_BASE = 'https://huggingface.co/mileschristou/au-intensity-estimator/resolve/main/';
 
+// Shared fallback config for all DINOv3 models (same preprocessing + AU set)
+const _DINO_CONFIG = {
+  au_names: ['AU01','AU02','AU04','AU05','AU06','AU09','AU12','AU15','AU17','AU20','AU25','AU26'],
+  num_aus: 12, resize: 256, crop: 224,
+  norm_mean: [0.485, 0.456, 0.406], norm_std: [0.229, 0.224, 0.225],
+  align: { output_size: 224, eye_dist_ratio: 0.30, eye_center_x: 0.50, eye_center_y: 0.40,
+           left_eye_landmark: 33, right_eye_landmark: 263 },
+};
+
 const MODELS = {
   resnet18: {
     label:     'ResNet-18',
@@ -27,24 +36,27 @@ const MODELS = {
     configUrl: HF_BASE + 'resnet18_model_fold1_config.json',
   },
   vitb: {
-    label:     'DINOv3 ViT-B',
-    size:      '354 MB',
-    modelUrl:  HF_BASE + 'model_fold1_single.onnx',
-    configUrl: HF_BASE + 'model_fold1_single_config.json',
+    label:        'DINOv3 ViT-B',
+    size:         '354 MB',
+    modelUrl:     HF_BASE + 'model_fold1_single.onnx',
+    configUrl:    HF_BASE + 'model_fold1_single_config.json',
+    configInline: { ..._DINO_CONFIG, backbone_type: 'dinov3_vitb16' },
   },
   vitl: {
-    label:     'DINOv3 ViT-L',
-    size:      '1.2 GB',
-    modelUrl:  HF_BASE + 'dinov3_vitl_model_fold1.onnx',
-    configUrl: HF_BASE + 'dinov3_vitl_model_fold1_config.json',
+    label:        'DINOv3 ViT-L',
+    size:         '1.2 GB',
+    modelUrl:     HF_BASE + 'dinov3_vitl_model_fold1.onnx',
+    configUrl:    HF_BASE + 'dinov3_vitl_model_fold1_config.json',
+    configInline: { ..._DINO_CONFIG, backbone_type: 'dinov3_vitl14' },
   },
   vith: {
-    label:     'DINOv3 ViT-H',
-    size:      '3.4 GB',
-    modelUrl:  HF_BASE + 'dinov3_vith_model_fold1_single.onnx',
-    configUrl: HF_BASE + 'dinov3_vith_model_fold1_config.json',
-    warn:      'Very large (3.4 GB) — needs merging before use',
-    unavailable: true,
+    label:        'DINOv3 ViT-H',
+    size:         '3.4 GB',
+    modelUrl:     HF_BASE + 'dinov3_vith_model_fold1_single.onnx',
+    configUrl:    HF_BASE + 'dinov3_vith_model_fold1_config.json',
+    configInline: { ..._DINO_CONFIG, backbone_type: 'dinov3_vith14' },
+    warn:         'Very large (3.4 GB) — needs merging before use',
+    unavailable:  true,
   },
 };
 
@@ -98,6 +110,9 @@ const classifyList    = $('classification-list');
 const regressionList  = $('regression-list');
 const btnCpu          = $('btn-cpu');
 const btnGpu          = $('btn-gpu');
+const btnRecord       = $('btn-record');
+const btnPause        = $('btn-pause');
+const btnStop         = $('btn-stop');
 const btnCsv          = $('btn-csv');
 const btnXlsx         = $('btn-xlsx');
 const btnClear        = $('btn-clear');
@@ -114,6 +129,8 @@ let frameIndex   = 0;
 let recordStart  = 0;
 let lastT        = 0;
 let fps          = 0;
+let recording    = false;   // true while actively capturing frames to frameData
+let paused       = false;   // true while recording is paused
 
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
 
@@ -238,7 +255,7 @@ async function loadModel(key) {
   stopAll();
 
   try {
-    await initModel(m.modelUrl, m.configUrl, provider);
+    await initModel(m.modelUrl, m.configUrl, provider, m.configInline);
 
     // Deactivate old model
     if (modelStatus[activeModel] === 'active') modelStatus[activeModel] = 'ready';
@@ -246,6 +263,7 @@ async function loadModel(key) {
     modelStatus[key] = 'active';
     if (headerSubtitle) headerSubtitle.textContent = `/ ${m.label} · DISFA`;
 
+    setProviderButtons(provider);   // keep provider buttons in sync after model switch
     buildModelPanel();
     buildRegressionPanel();
     setStatus(`Model: ${m.label}`);
@@ -452,11 +470,13 @@ async function processFrame(source, srcW, srcH, mpTs, recordTs) {
   drawOverlay(landmarks);
   updateAUPanels(predictions);
 
-  const row = { frame: frameIndex++, timestamp_ms: Math.round(recordTs) };
-  for (const [k, v] of Object.entries(predictions)) row[k] = parseFloat(v.toFixed(4));
-  frameData.push(row);
-  frameCountEl.textContent = `Frames: ${frameData.length}`;
-  updateExportButtons();
+  if (recording && !paused) {
+    const row = { frame: frameIndex++, timestamp_ms: Math.round(recordTs) };
+    for (const [k, v] of Object.entries(predictions)) row[k] = parseFloat(v.toFixed(4));
+    frameData.push(row);
+    frameCountEl.textContent = `Frames: ${frameData.length}`;
+    updateExportButtons();
+  }
 }
 
 // ─── Overlay ──────────────────────────────────────────────────────────────────
@@ -575,7 +595,8 @@ function setProviderButtons(active) {
 }
 
 async function switchProvider(p) {
-  if (p === provider) return;
+  // Allow re-triggering same provider if session is dead (e.g. after GPU crash fallback)
+  if (p === provider && isReady()) return;
   const label = PROVIDER_LABELS[p] ?? p;
   setStatus(`Switching to ${label}…`);
   setProviderButtons(p);
@@ -602,6 +623,40 @@ async function switchProvider(p) {
     await initModel(m.modelUrl, m.configUrl, provider);
   }
 }
+
+// ─── Recording controls ───────────────────────────────────────────────────────
+
+btnRecord.addEventListener('click', () => {
+  recording = true;
+  paused    = false;
+  recordStart = performance.now();
+  frameData   = [];
+  frameIndex  = 0;
+  frameCountEl.textContent = 'Frames: 0';
+  btnRecord.classList.add('recording');
+  btnRecord.disabled = true;
+  btnPause.disabled  = false;
+  btnStop.disabled   = false;
+  updateExportButtons();
+  setStatus('Recording…');
+});
+
+btnPause.addEventListener('click', () => {
+  paused = !paused;
+  btnPause.textContent = paused ? '▶ Resume' : '⏸ Pause';
+  setStatus(paused ? 'Recording paused' : 'Recording…');
+});
+
+btnStop.addEventListener('click', () => {
+  recording = false;
+  paused    = false;
+  btnRecord.classList.remove('recording');
+  btnRecord.disabled = false;
+  btnPause.disabled  = true;
+  btnPause.textContent = '⏸ Pause';
+  btnStop.disabled   = true;
+  setStatus(`Stopped — ${frameData.length} frames captured`);
+});
 
 // ─── Export ───────────────────────────────────────────────────────────────────
 
