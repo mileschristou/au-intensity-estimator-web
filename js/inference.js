@@ -24,6 +24,7 @@ ort.env.wasm.wasmPaths =
 let _session   = null;   // ort.InferenceSession
 let _config    = null;   // parsed model_config.json
 let _provider  = null;   // 'webgpu' | 'wasm'
+let _modelUrl  = null;   // URL of currently loaded model
 
 // ─── Preprocessing constants (overridden by config after load) ────────────────
 
@@ -52,8 +53,8 @@ export async function initModel(
   configUrl,
   provider = 'wasm'
 ) {
-  // Reload if provider changed
-  if (_session && _provider === provider) return _config;
+  // Reload if provider or model changed
+  if (_session && _provider === provider && _modelUrl === modelUrl) return _config;
 
   // Keep the old session alive until the new one is confirmed working.
   // If the new session fails, the old one is still intact and usable.
@@ -95,6 +96,7 @@ export async function initModel(
 
   _session  = newSession;
   _provider = provider;
+  _modelUrl = modelUrl;
 
   console.log(`[inference] Model loaded — provider: ${provider}, AUs: ${_config.au_names}`);
   return _config;
