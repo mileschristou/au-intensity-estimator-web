@@ -13,7 +13,7 @@
  * WebGPU is faster but requires Chrome/Edge 113+; WASM works everywhere.
  */
 
-import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.mjs';
+import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.all.min.mjs';
 
 // Configure ONNX Runtime Web WASM paths (must point to CDN or local copy)
 ort.env.wasm.wasmPaths =
