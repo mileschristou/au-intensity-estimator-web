@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AU Intensity Estimator</title>
+  <style>
+    /* ── Reset & base ─────────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0a0a0a;
+      --surface:   #131313;
+      --surface2:  #1a1a1a;
+      --border:    #242424;
+      --green:     #00e676;
+      --green-dim: #00994d;
+      --cyan:      #00c8e0;
+      --cyan-dim:  #007a8a;
+      --red:       #ff3355;
+      --text:      #d8d8d8;
+      --muted:     #555;
+      --font:      'Inter', system-ui, -apple-system, sans-serif;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 13px;
+      line-height: 1.5;
+      overflow: hidden;
+    }
+
+    /* ── Loading overlay ──────────────────────────────────────────────────── */
+    #loading-overlay {
+      position: fixed; inset: 0; z-index: 999;
+      background: var(--bg);
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 20px;
+    }
+    #loading-overlay.hidden { display: none; }
+
+    .spinner {
+      width: 40px; height: 40px;
+      border: 3px solid var(--border);
+      border-top-color: var(--green);
+      border-radius: 50%;
+      animation: spin .8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    #loading-text {
+      color: var(--muted);
+      font-size: 14px;
+      letter-spacing: .04em;
+    }
+
+    /* ── Layout ───────────────────────────────────────────────────────────── */
+    #app {
+      display: grid;
+      grid-template-rows: 44px 1fr 36px;
+      height: 100vh;
+    }
+
+    /* ── Header ───────────────────────────────────────────────────────────── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      gap: 12px;
+    }
+
+    .header-title {
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: .08em;
+      color: var(--green);
+      white-space: nowrap;
+    }
+    .header-title span { color: var(--muted); font-weight: 400; }
+
+    .header-controls { display: flex; align-items: center; gap: 10px; }
+
+    /* tab bar */
+    .tab-group {
+      display: flex;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      overflow: hidden;
+    }
+    .tab {
+      background: none; border: none; outline: none;
+      color: var(--muted);
+      font: inherit; font-size: 12px;
+      padding: 5px 14px;
+      cursor: pointer;
+      border-right: 1px solid var(--border);
+      transition: background .15s, color .15s;
+    }
+    .tab:last-child { border-right: none; }
+    .tab:hover { background: var(--surface2); color: var(--text); }
+    .tab.active { background: var(--surface2); color: var(--green); }
+
+    /* device toggle */
+    .device-group {
+      display: flex;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      overflow: hidden;
+    }
+    .device-btn {
+      background: none; border: none; outline: none;
+      color: var(--muted);
+      font: inherit; font-size: 12px;
+      padding: 5px 12px;
+      cursor: pointer;
+      border-right: 1px solid var(--border);
+      transition: background .15s, color .15s;
+    }
+    .device-btn:last-child { border-right: none; }
+    .device-btn:not(:disabled):hover { background: var(--surface2); color: var(--text); }
+    .device-btn.active { background: var(--surface2); color: var(--cyan); }
+    .device-btn:disabled {
+      opacity: .3;
+      cursor: not-allowed;
+      color: var(--muted);
+    }
+
+    /* ── Main ─────────────────────────────────────────────────────────────── */
+    main {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      overflow: hidden;
+    }
+
+    /* ── Left: viewer ─────────────────────────────────────────────────────── */
+    .viewer {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #000;
+      /* keep aspect ratio 4:3 */
+      aspect-ratio: 4 / 3;
+      height: 100%;
+      max-height: 100%;
+    }
+
+    #display-canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+
+    /* overlaid HUD badges */
+    .hud {
+      position: absolute; inset: 0;
+      pointer-events: none;
+    }
+    #fps-counter {
+      position: absolute; top: 10px; left: 10px;
+      font-size: 12px; font-weight: 600;
+      color: #fff;
+      background: rgba(0,0,0,.55);
+      padding: 2px 7px;
+      border-radius: 3px;
+      letter-spacing: .04em;
+    }
+    #detected-badge {
+      position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+      font-size: 13px; font-weight: 700;
+      color: var(--green);
+      background: rgba(0,0,0,.6);
+      padding: 2px 10px;
+      border-radius: 3px;
+      letter-spacing: .04em;
+    }
+    #detected-badge.hidden { display: none; }
+    #no-face-msg {
+      position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+      font-size: 13px;
+      color: var(--red);
+      background: rgba(0,0,0,.6);
+      padding: 2px 10px;
+      border-radius: 3px;
+    }
+    #no-face-msg.hidden { display: none; }
+
+    /* upload overlay */
+    #upload-area {
+      position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(0,0,0,.7);
+    }
+    #upload-area.hidden { display: none; }
+
+    #upload-prompt {
+      display: flex; flex-direction: column; align-items: center; gap: 8px;
+      border: 2px dashed var(--border);
+      border-radius: 10px;
+      padding: 32px 48px;
+      cursor: pointer;
+      transition: border-color .2s, background .2s;
+      color: var(--muted);
+    }
+    #upload-area.drag-over #upload-prompt,
+    #upload-prompt:hover {
+      border-color: var(--cyan);
+      background: rgba(0,200,224,.06);
+      color: var(--cyan);
+    }
+    .upload-icon { font-size: 28px; }
+    .upload-hint { font-size: 11px; color: var(--muted); }
+
+    /* video element (hidden, used as source) */
+    #webcam-video  { display: none; }
+    #upload-video  {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      object-fit: contain;
+      opacity: 0;  /* rendered to canvas instead */
+      pointer-events: none;
+    }
+    #upload-video.hidden { display: none; }
+
+    /* ── Model panel ─────────────────────────────────────────────────────── */
+    #model-list {
+      padding: 4px 0;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .model-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 12px;
+      transition: background .1s;
+    }
+    .model-row.model-active { background: rgba(0,230,118,.04); }
+
+    .model-radio {
+      width: 11px; height: 11px;
+      border-radius: 50%;
+      border: 2px solid var(--muted);
+      flex-shrink: 0;
+      transition: border-color .15s, background .15s;
+    }
+    .model-radio.model-radio-on {
+      border-color: var(--green);
+      background: var(--green);
+    }
+
+    .model-info {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+    .model-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .model-active .model-label { color: var(--green); }
+    .model-size {
+      font-size: 10px;
+      color: var(--muted);
+    }
+
+    .model-action { flex-shrink: 0; }
+
+    .model-load-btn {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--muted);
+      font: inherit; font-size: 11px; font-weight: 600;
+      padding: 3px 10px;
+      cursor: pointer;
+      transition: border-color .15s, color .15s;
+    }
+    .model-load-btn:hover {
+      border-color: var(--cyan);
+      color: var(--cyan);
+    }
+
+    .model-badge-active {
+      font-size: 11px; font-weight: 600;
+      color: var(--green);
+      padding: 2px 8px;
+      border: 1px solid var(--green-dim);
+      border-radius: 4px;
+      background: rgba(0,230,118,.08);
+    }
+    .model-badge-loading {
+      font-size: 11px;
+      color: var(--cyan);
+      padding: 2px 8px;
+    }
+    .model-badge-warn {
+      font-size: 11px;
+      color: var(--muted);
+      padding: 2px 8px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      cursor: help;
+    }
+
+    /* ── Right: AU panel ──────────────────────────────────────────────────── */
+    .au-panel {
+      display: flex;
+      flex-direction: column;
+      border-left: 1px solid var(--border);
+      background: var(--surface);
+      overflow: hidden;
+      min-width: 360px;
+      max-width: 480px;
+    }
+
+    .au-panel-header {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--muted);
+      padding: 9px 14px 7px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .au-columns {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    .au-col {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border-right: 1px solid var(--border);
+    }
+    .au-col:last-child { border-right: none; }
+
+    .au-col-header {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      padding: 7px 12px 5px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .au-list {
+      flex: 1;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 6px 0;
+      scrollbar-width: thin;
+      scrollbar-color: var(--border) transparent;
+    }
+
+    .au-empty {
+      padding: 10px 14px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    /* AU row */
+    .au-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 10px;
+      transition: background .1s;
+    }
+    .au-row.au-active { background: rgba(0,200,224,.05); }
+
+    .au-name {
+      flex-shrink: 0;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--muted);
+      width: 34px;
+    }
+    .au-row.au-active .au-name { color: var(--cyan); }
+
+    .au-desc {
+      font-size: 10px;
+      font-weight: 400;
+      display: block;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: inherit;
+      opacity: .7;
+    }
+
+    .au-name-full {
+      flex: 1;
+      min-width: 0;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .au-row.au-active .au-name-full { color: var(--text); }
+
+    .au-track {
+      flex: 1;
+      height: 6px;
+      background: var(--surface2);
+      border-radius: 3px;
+      overflow: hidden;
+      min-width: 40px;
+    }
+
+    .au-fill {
+      height: 100%;
+      background: var(--cyan-dim);
+      border-radius: 3px;
+      transition: width .1s linear;
+    }
+    .au-row.au-active .au-fill { background: var(--cyan); }
+
+    .au-val {
+      flex-shrink: 0;
+      width: 30px;
+      text-align: right;
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      color: var(--muted);
+    }
+    .au-row.au-active .au-val { color: var(--text); }
+
+    /* ── Footer ───────────────────────────────────────────────────────────── */
+    footer {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 14px;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+      overflow: hidden;
+    }
+
+    #frame-count {
+      font-size: 12px;
+      color: var(--muted);
+      flex-shrink: 0;
+    }
+
+    #status-text {
+      flex: 1;
+      font-size: 12px;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .export-btns { display: flex; gap: 6px; flex-shrink: 0; }
+
+    .export-btn {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--muted);
+      font: inherit; font-size: 11px; font-weight: 600;
+      padding: 3px 10px;
+      cursor: pointer;
+      letter-spacing: .04em;
+      transition: border-color .15s, color .15s, background .15s;
+    }
+    .export-btn:not(:disabled):hover {
+      border-color: var(--cyan);
+      color: var(--cyan);
+      background: rgba(0,200,224,.07);
+    }
+    .export-btn:disabled { opacity: .35; cursor: not-allowed; }
+    .export-btn.danger:not(:disabled):hover {
+      border-color: var(--red);
+      color: var(--red);
+      background: rgba(255,51,85,.07);
+    }
+
+    /* hidden util */
+    .hidden { display: none !important; }
+
+    /* ── Scrollbar ────────────────────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  </style>
+</head>
+<body>
+
+<!-- Loading screen -->
+<div id="loading-overlay">
+  <div class="spinner"></div>
+  <p id="loading-text">Initialising…</p>
+</div>
+
+<div id="app">
+
+  <!-- ── Header ──────────────────────────────────────────────────────────── -->
+  <header>
+    <div class="header-title">
+      AU Intensity Estimator <span id="header-subtitle">/ ResNet-18 · DISFA</span>
+    </div>
+
+    <div class="header-controls">
+      <!-- Tab switcher -->
+      <div class="tab-group">
+        <button class="tab active" data-tab="webcam">Webcam</button>
+        <button class="tab"        data-tab="image">Image</button>
+        <button class="tab"        data-tab="video">Video</button>
+      </div>
+
+      <!-- CPU / GPU -->
+      <div class="device-group">
+        <button class="device-btn active" id="btn-cpu">CPU</button>
+        <button class="device-btn"        id="btn-gpu">GPU</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- ── Main ────────────────────────────────────────────────────────────── -->
+  <main>
+
+    <!-- Left: canvas viewer -->
+    <div class="viewer">
+      <canvas id="display-canvas"></canvas>
+
+      <!-- HUD overlays -->
+      <div id="fps-counter">FPS: --</div>
+      <div id="detected-badge" class="hidden">Detected</div>
+      <div id="no-face-msg"    class="hidden">No face detected</div>
+
+      <!-- Upload area (image / video tabs) -->
+      <div id="upload-area" class="hidden">
+        <div id="upload-prompt">
+          <span class="upload-icon">⬆</span>
+          <span>Click or drag to upload</span>
+          <span class="upload-hint">Supports JPG · PNG · MP4 · MOV · WebM</span>
+        </div>
+      </div>
+
+      <!-- Hidden media sources -->
+      <video id="webcam-video" autoplay muted playsinline></video>
+      <video id="upload-video" playsinline class="hidden"></video>
+      <input type="file" id="image-input" accept="image/*"  class="hidden" />
+      <input type="file" id="video-input" accept="video/*"  class="hidden" />
+    </div>
+
+    <!-- Right: AU panel -->
+    <div class="au-panel">
+      <div class="au-panel-header">Models</div>
+      <div id="model-list"></div>
+      <div class="au-panel-header">Action Units</div>
+      <div class="au-columns">
+
+        <div class="au-col">
+          <div class="au-col-header">Classification</div>
+          <div class="au-list" id="classification-list">
+            <div class="au-empty">—</div>
+          </div>
+        </div>
+
+        <div class="au-col">
+          <div class="au-col-header">Regression · Intensity</div>
+          <div class="au-list" id="regression-list"></div>
+        </div>
+
+      </div>
+    </div>
+
+  </main>
+
+  <!-- ── Footer ──────────────────────────────────────────────────────────── -->
+  <footer>
+    <span id="frame-count">Frames: 0</span>
+    <span id="status-text">Loading…</span>
+    <div class="export-btns">
+      <button class="export-btn" id="btn-csv"   disabled>↓ CSV</button>
+      <button class="export-btn" id="btn-xlsx"  disabled>↓ XLSX</button>
+      <button class="export-btn danger" id="btn-clear" disabled>Clear</button>
+    </div>
+  </footer>
+
+</div>
+
+<script type="module" src="js/ui.js"></script>
+</body>
+</html>

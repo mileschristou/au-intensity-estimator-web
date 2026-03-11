@@ -1,0 +1,38 @@
+{
+  "backbone_type": "resnet18",
+  "au_names": [
+    "AU01",
+    "AU02",
+    "AU04",
+    "AU05",
+    "AU06",
+    "AU09",
+    "AU12",
+    "AU15",
+    "AU17",
+    "AU20",
+    "AU25",
+    "AU26"
+  ],
+  "num_aus": 12,
+  "resize": 256,
+  "crop": 224,
+  "norm_mean": [
+    0.485,
+    0.456,
+    0.406
+  ],
+  "norm_std": [
+    0.229,
+    0.224,
+    0.225
+  ],
+  "align": {
+    "output_size": 224,
+    "eye_dist_ratio": 0.3,
+    "eye_center_x": 0.5,
+    "eye_center_y": 0.4,
+    "left_eye_landmark": 33,
+    "right_eye_landmark": 263
+  }
+}
