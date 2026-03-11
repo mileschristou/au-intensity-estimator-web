@@ -144,11 +144,19 @@ export async function initModel(
     await _prepareWebGPUDevice();
   }
 
-  // Build session options
-  const sessionOptions = {
-    executionProviders: [provider],
-    graphOptimizationLevel: 'all',
-  };
+  // Build session options.
+  // For WebGPU: explicitly request CPU output location so ORT copies the result
+  // tensor back from GPU memory to a Float32Array before returning — without this,
+  // output.data may be a GPUBuffer rather than a typed array.
+  const sessionOptions = provider === 'webgpu'
+    ? {
+        executionProviders: [{ name: 'webgpu', preferredOutputLocation: 'cpu' }],
+        graphOptimizationLevel: 'all',
+      }
+    : {
+        executionProviders: [provider],
+        graphOptimizationLevel: 'all',
+      };
 
   let newSession;
   try {
