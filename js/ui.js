@@ -24,7 +24,7 @@ const MODELS = {
     label:     'ResNet-18',
     size:      '49 MB',
     modelUrl:  HF_BASE + 'resnet18_model_fold1_single.onnx',
-    configUrl: HF_BASE + 'resnet18_model_fold1_single_config.json',
+    configUrl: HF_BASE + 'resnet18_model_fold1_config.json',
   },
   vitb: {
     label:     'DINOv3 ViT-B',
