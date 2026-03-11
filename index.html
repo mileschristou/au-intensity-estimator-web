@@ -4,6 +4,18 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AU Intensity Estimator</title>
+  <!-- Register COI service worker so SharedArrayBuffer is available.
+       ORT WebGPU requires SharedArrayBuffer to load its threaded JSEP wasm.
+       GitHub Pages can't set COOP/COEP headers, so the SW injects them.
+       The page reloads once after the SW activates; window.crossOriginIsolated
+       prevents an infinite reload loop. -->
+  <script>
+    if ('serviceWorker' in navigator && !window.crossOriginIsolated) {
+      navigator.serviceWorker.register('./coi-serviceworker.js')
+        .then(() => window.location.reload())
+        .catch(e => console.warn('COI SW registration failed:', e));
+    }
+  </script>
   <style>
     /* ── Reset & base ─────────────────────────────────────────────────────── */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
