@@ -126,8 +126,9 @@ async function init() {
 
     const webGpuAvailable = await checkWebGPU();
     if (!webGpuAvailable) {
-      btnGpu.disabled = true;
-      btnGpu.title    = 'WebGPU not available in this browser (Chrome/Edge 113+ required)';
+      // WebGPU API absent entirely — keep button but warn
+      btnGpu.title = 'WebGPU not detected — click to try anyway (Chrome/Edge 113+ required)';
+      btnGpu.style.opacity = '0.5';
     }
 
     setStatus('Loading MediaPipe…');
@@ -152,7 +153,9 @@ async function init() {
 async function checkWebGPU() {
   if (!('gpu' in navigator)) return false;
   try {
-    const adapter = await navigator.gpu.requestAdapter();
+    // Try high-performance adapter first (discrete GPU), fall back to default
+    const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' })
+                 ?? await navigator.gpu.requestAdapter();
     return adapter !== null;
   } catch {
     return false;
