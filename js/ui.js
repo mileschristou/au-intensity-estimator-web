@@ -97,6 +97,7 @@ const uploadPrompt    = $('upload-prompt');
 const classifyList    = $('classification-list');
 const regressionList  = $('regression-list');
 const btnCpu          = $('btn-cpu');
+const btnWebgl        = $('btn-webgl');
 const btnGpu          = $('btn-gpu');
 const btnCsv          = $('btn-csv');
 const btnXlsx         = $('btn-xlsx');
@@ -538,32 +539,42 @@ function clearAUBars() {
 
 // ─── Provider toggle ──────────────────────────────────────────────────────────
 
-btnCpu.addEventListener('click', () => switchProvider('wasm'));
-btnGpu.addEventListener('click', () => switchProvider('webgpu'));
+btnCpu.addEventListener('click',   () => switchProvider('wasm'));
+btnWebgl.addEventListener('click', () => switchProvider('webgl'));
+btnGpu.addEventListener('click',   () => switchProvider('webgpu'));
+
+const PROVIDER_LABELS = { wasm: 'CPU', webgl: 'WebGL', webgpu: 'WebGPU' };
+
+function setProviderButtons(active) {
+  btnCpu.classList.toggle('active',   active === 'wasm');
+  btnWebgl.classList.toggle('active', active === 'webgl');
+  btnGpu.classList.toggle('active',   active === 'webgpu');
+}
 
 async function switchProvider(p) {
   if (p === provider) return;
-  const label = p === 'wasm' ? 'CPU' : 'GPU (WebGPU)';
+  const label = PROVIDER_LABELS[p] ?? p;
   setStatus(`Switching to ${label}…`);
-  btnCpu.classList.toggle('active', p === 'wasm');
-  btnGpu.classList.toggle('active', p === 'webgpu');
+  setProviderButtons(p);
   try {
     const m = modelUrls();
     await initModel(m.modelUrl, m.configUrl, p);
     provider = p;
     setStatus(`Running on ${label}`);
   } catch (err) {
-    console.warn('[ui] Provider switch failed:', err);
+    console.warn(`[ui] ${label} failed:`, err);
     if (p === 'webgpu') {
       btnGpu.disabled = true;
-      btnGpu.title    = 'WebGPU failed on this device — CPU only';
+      btnGpu.title    = 'WebGPU failed on this device';
+    } else if (p === 'webgl') {
+      btnWebgl.disabled = true;
+      btnWebgl.title    = 'WebGL failed on this device';
     }
-    btnCpu.classList.add('active');
-    btnGpu.classList.remove('active');
-    setStatus('GPU unavailable — running on CPU');
+    // Restore previous provider buttons and session
+    setProviderButtons(provider);
+    setStatus(`${label} unavailable — staying on ${PROVIDER_LABELS[provider]}`);
     const m = modelUrls();
-    await initModel(m.modelUrl, m.configUrl, 'wasm');
-    provider = 'wasm';
+    await initModel(m.modelUrl, m.configUrl, provider);
   }
 }
 
