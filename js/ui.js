@@ -551,9 +551,19 @@ function setProviderButtons(active) {
   btnGpu.classList.toggle('active',   active === 'webgpu');
 }
 
+// Models that use opset-18 attention ops — not supported by ORT WebGL backend
+const WEBGL_UNSUPPORTED_MODELS = new Set(['vitb', 'vitl', 'vith']);
+
 async function switchProvider(p) {
   if (p === provider) return;
   const label = PROVIDER_LABELS[p] ?? p;
+
+  // WebGL + ViT models: ops not supported — fail fast with a clear message
+  if (p === 'webgl' && WEBGL_UNSUPPORTED_MODELS.has(activeModel)) {
+    setStatus('WebGL does not support ViT models — switch to ResNet-18 first, or use CPU.');
+    return;
+  }
+
   setStatus(`Switching to ${label}…`);
   setProviderButtons(p);
   try {
@@ -564,16 +574,26 @@ async function switchProvider(p) {
   } catch (err) {
     console.warn(`[ui] ${label} failed:`, err);
     const errMsg = err?.message ?? String(err);
+
+    // Produce a human-readable hint instead of raw ORT internals
+    let hint = errMsg.slice(0, 140);
+    if (p === 'webgpu' && errMsg.includes('backend not found')) {
+      hint = 'WebGPU not available — requires Chrome 113+ with GPU hardware support. '
+           + 'Try enabling it at chrome://flags/#enable-webgpu-developer-features';
+    } else if (p === 'webgl' && errMsg.toLowerCase().includes('not supported')) {
+      hint = 'WebGL does not support all ops needed by this model. Switch to ResNet-18 or use CPU.';
+    }
+
     if (p === 'webgpu') {
       btnGpu.disabled = true;
-      btnGpu.title    = `WebGPU failed: ${errMsg}`;
+      btnGpu.title    = hint;
     } else if (p === 'webgl') {
       btnWebgl.disabled = true;
-      btnWebgl.title    = `WebGL failed: ${errMsg}`;
+      btnWebgl.title    = hint;
     }
     // Restore previous provider buttons and session
     setProviderButtons(provider);
-    setStatus(`${label} failed: ${errMsg.slice(0, 120)}`);
+    setStatus(hint);
     const m = modelUrls();
     await initModel(m.modelUrl, m.configUrl, provider);
   }
