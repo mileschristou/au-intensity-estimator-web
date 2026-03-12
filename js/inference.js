@@ -262,16 +262,25 @@ export async function predict(alignedCanvas) {
     const keys = Object.keys(results);
     throw new Error(`Output 'au_intensities' not found. Available: ${keys.join(', ')}`);
   }
-  const data = output.data instanceof Float32Array ? output.data : new Float32Array(output.data);
 
-  // Periodic diagnostic: log max AU value so we can confirm GPU is producing
-  // non-zero results (fires every 60 frames, ~2 s at 30 fps)
+  // Use getData() — the async API that explicitly downloads from GPU memory if
+  // the tensor is still on the GPU (output.data is synchronous and only works
+  // reliably for CPU tensors; on WebGPU it can silently return zeros or a buffer).
+  let raw;
+  if (typeof output.getData === 'function') {
+    raw = await output.getData();
+  } else {
+    raw = output.data;
+  }
+  const data = raw instanceof Float32Array ? raw : new Float32Array(raw);
+
+  // Periodic diagnostic — fires every 60 frames (~2 s at 30 fps)
   if (++_diagCount % 60 === 1) {
     const max = Math.max(...data).toFixed(3);
     console.log(`[inference] ${_provider} — max AU: ${max}, sample: [${Array.from(data.slice(0,4)).map(x=>x.toFixed(3)).join(', ')}]`);
   }
 
-  return data.slice();   // Float32Array copy
+  return data.slice();
 }
 
 /**
