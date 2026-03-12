@@ -471,7 +471,16 @@ async function processFrame(source, srcW, srcH, mpTs, recordTs) {
   updateAUPanels(predictions);
 
   if (recording && !paused) {
-    const row = { frame: frameIndex++, timestamp_ms: Math.round(recordTs) };
+    const now = new Date();
+    const hh  = String(now.getHours()).padStart(2, '0');
+    const mm  = String(now.getMinutes()).padStart(2, '0');
+    const ss  = String(now.getSeconds()).padStart(2, '0');
+    const ms  = String(now.getMilliseconds()).padStart(3, '0');
+    const row = {
+      frame:        frameIndex++,
+      timestamp_ms: Math.round(recordTs),
+      clock_time:   `${hh}:${mm}:${ss}.${ms}`,
+    };
     for (const [k, v] of Object.entries(predictions)) row[k] = parseFloat(v.toFixed(4));
     frameData.push(row);
     frameCountEl.textContent = `Frames: ${frameData.length}`;

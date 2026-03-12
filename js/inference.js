@@ -74,6 +74,7 @@ async function _prepareWebGPUDevice() {
 let _session   = null;   // ort.InferenceSession
 let _config    = null;   // parsed model_config.json
 let _provider  = null;   // 'webgpu' | 'wasm'
+let _diagCount = 0;      // for periodic output diagnostics
 let _modelUrl  = null;   // URL of currently loaded model
 
 // ─── Preprocessing constants (overridden by config after load) ────────────────
@@ -262,6 +263,14 @@ export async function predict(alignedCanvas) {
     throw new Error(`Output 'au_intensities' not found. Available: ${keys.join(', ')}`);
   }
   const data = output.data instanceof Float32Array ? output.data : new Float32Array(output.data);
+
+  // Periodic diagnostic: log max AU value so we can confirm GPU is producing
+  // non-zero results (fires every 60 frames, ~2 s at 30 fps)
+  if (++_diagCount % 60 === 1) {
+    const max = Math.max(...data).toFixed(3);
+    console.log(`[inference] ${_provider} — max AU: ${max}, sample: [${Array.from(data.slice(0,4)).map(x=>x.toFixed(3)).join(', ')}]`);
+  }
+
   return data.slice();   // Float32Array copy
 }
 
