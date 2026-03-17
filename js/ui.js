@@ -645,8 +645,18 @@ async function switchProvider(p) {
     btnGpu.title = '';
     btnGpu.style.opacity = '';
     setProviderButtons(p);
-    buildRegressionPanel();   // rebuild in case panel was cleared
     setStatus(`Running on ${label}`);
+
+    // If on image tab with a previously analyzed image, re-analyze with new provider
+    if (activeTab === 'image' && displayCanvas.width > 0) {
+      const img = new Image();
+      img.onload = async () => {
+        setStatus('Re-analysing with ' + label + '…');
+        await processFrame(img, img.naturalWidth, img.naturalHeight, performance.now(), 0);
+        setStatus(`Done (${label})`);
+      };
+      img.src = displayCanvas.toDataURL();
+    }
   } catch (err) {
     console.warn(`[ui] ${label} failed:`, err);
     const errMsg = err?.message ?? String(err);
