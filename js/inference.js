@@ -19,55 +19,24 @@ import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.3/dist/o
 ort.env.wasm.wasmPaths =
   'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.3/dist/';
 
-// ─── WebGPU device setup ──────────────────────────────────────────────────────
+// ─── WebGPU ──────────────────────────────────────────────────────────────────
 
 let _deviceLostHandler = null;
 
 /** Register a callback for GPU device loss (e.g. to auto-switch to CPU). */
 export function setDeviceLostHandler(fn) { _deviceLostHandler = fn; }
 
-async function _prepareWebGPUDevice() {
-  if (!('gpu' in navigator)) return false;
-  try {
-    // Destroy any existing device before creating a new one (avoids stale device after crash)
-    if (ort.env.webgpu?.device) {
-      try { ort.env.webgpu.device.destroy(); } catch (_) { /* ok */ }
-      ort.env.webgpu.device = undefined;
-    }
-
-    const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' })
-                 ?? await navigator.gpu.requestAdapter();
-    if (!adapter) return false;
-
-    const adapterMax = adapter.limits.maxStorageBuffersPerShaderStage ?? 8;
-    console.log(`[inference] WebGPU adapter — maxStorageBuffers: ${adapterMax}`);
-
-    if (adapterMax < 12) {
-      throw new Error(
-        `GPU only supports ${adapterMax} storage buffers per shader stage (ONNX Runtime needs ≥12). ` +
-        `This is a hardware limit of this GPU — WebGPU acceleration is not available.`
-      );
-    }
-
-    const device = await adapter.requestDevice({
-      requiredLimits: { maxStorageBuffersPerShaderStage: adapterMax },
-    });
-
-    device.lost.then(info => {
-      console.warn('[inference] WebGPU device lost:', info.message);
-      _session  = null;
-      _provider = null;
-      ort.env.webgpu.device = undefined;
-      _deviceLostHandler?.();
-    });
-
-    ort.env.webgpu.device = device;
-    console.log(`[inference] WebGPU device ready`);
-    return true;
-  } catch (e) {
-    console.warn('[inference] Could not create WebGPU device:', e);
-    return false;
+/** Quick check: does this browser/GPU support WebGPU at all? */
+async function _checkWebGPUSupport() {
+  if (!('gpu' in navigator)) {
+    throw new Error('WebGPU API not available — requires Chrome/Edge 113+');
   }
+  const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' })
+               ?? await navigator.gpu.requestAdapter();
+  if (!adapter) {
+    throw new Error('No WebGPU adapter found — GPU may not support WebGPU');
+  }
+  console.log(`[inference] WebGPU adapter OK — maxStorageBuffers: ${adapter.limits.maxStorageBuffersPerShaderStage}`);
 }
 
 // ─── Module state ─────────────────────────────────────────────────────────────
@@ -183,15 +152,9 @@ export async function initModel(
       return _config;
     }
 
-    // Clear dead GPU device when switching away from WebGPU
-    if (provider !== 'webgpu' && ort.env.webgpu?.device) {
-      ort.env.webgpu.device = undefined;
-    }
-
-    // Pre-create WebGPU device with maximal limits
+    // Check WebGPU support before attempting a GPU session
     if (provider === 'webgpu') {
-      const ok = await _prepareWebGPUDevice();
-      if (!ok) throw new Error('WebGPU device creation failed — no compatible GPU adapter found');
+      await _checkWebGPUSupport();
     }
 
     if (mySeq !== _seqNo) {
@@ -215,16 +178,6 @@ export async function initModel(
     if (mySeq !== _seqNo) {
       console.log('[inference] Superseded during download — aborting');
       return _config;
-    }
-
-    // Debug: verify ORT has our custom WebGPU device
-    if (provider === 'webgpu') {
-      const d = ort.env.webgpu?.device;
-      if (d) {
-        console.log(`[inference] ort.env.webgpu.device is SET — limits.maxStorageBuffersPerShaderStage: ${d.limits?.maxStorageBuffersPerShaderStage}`);
-      } else {
-        console.warn(`[inference] ort.env.webgpu.device is NOT set — ORT will create its own device with default limits!`);
-      }
     }
 
     console.log(`[inference] Creating ${provider} session for ${fileName}…`);
