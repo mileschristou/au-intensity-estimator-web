@@ -248,11 +248,11 @@ async function loadModel(key) {
   const m = MODELS[key];
   if (!m || m.unavailable) return;
 
-  // Mark loading
+  // Mark loading — DON'T stop the webcam; just let the loop skip inference
+  // while the new model downloads (isReady() returns false during session rebuild).
   modelStatus[key] = 'loading';
   buildModelPanel();
   setStatus(`Loading ${m.label} (${m.size})…`);
-  stopAll();
 
   try {
     await initModel(m.modelUrl, m.configUrl, provider, m.configInline);
@@ -267,7 +267,6 @@ async function loadModel(key) {
     buildModelPanel();
     buildRegressionPanel();
     setStatus(`Model: ${m.label}`);
-    if (activeTab === 'webcam') await startWebcam();
   } catch (err) {
     modelStatus[key] = 'error';
     buildModelPanel();
@@ -341,7 +340,13 @@ async function webcamLoop(now) {
   updateFPS(now);
 
   if (webcamVideo.readyState >= 2) {
+    // Always draw the video feed — even while a model is loading
     ctx.drawImage(webcamVideo, 0, 0, CANVAS_W, CANVAS_H);
+    if (!isReady()) {
+      // Model is loading/switching — show feed but skip inference
+      requestAnimationFrame(webcamLoop);
+      return;
+    }
     try {
       await processFrame(webcamVideo, webcamVideo.videoWidth, webcamVideo.videoHeight, now);
     } catch (err) {
