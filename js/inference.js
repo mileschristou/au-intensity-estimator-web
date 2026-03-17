@@ -13,11 +13,11 @@
  * WebGPU is faster but requires Chrome/Edge 113+; WASM works everywhere.
  */
 
-import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.all.min.mjs';
+import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.3/dist/ort.all.min.mjs';
 
 // Configure ONNX Runtime Web WASM paths
 ort.env.wasm.wasmPaths =
-  'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/';
+  'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.3/dist/';
 
 // ─── WebGPU device setup ──────────────────────────────────────────────────────
 
@@ -215,6 +215,16 @@ export async function initModel(
     if (mySeq !== _seqNo) {
       console.log('[inference] Superseded during download — aborting');
       return _config;
+    }
+
+    // Debug: verify ORT has our custom WebGPU device
+    if (provider === 'webgpu') {
+      const d = ort.env.webgpu?.device;
+      if (d) {
+        console.log(`[inference] ort.env.webgpu.device is SET — limits.maxStorageBuffersPerShaderStage: ${d.limits?.maxStorageBuffersPerShaderStage}`);
+      } else {
+        console.warn(`[inference] ort.env.webgpu.device is NOT set — ORT will create its own device with default limits!`);
+      }
     }
 
     console.log(`[inference] Creating ${provider} session for ${fileName}…`);
