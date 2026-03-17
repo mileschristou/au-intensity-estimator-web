@@ -10,7 +10,7 @@ import {
 } from './face_align.js';
 
 import {
-  initModel, predictNamed, getAUNames, isReady, setDeviceLostHandler,
+  initModel, predictNamed, getAUNames, isReady, setDeviceLostHandler, setProgressCallback,
 } from './inference.js';
 
 import { downloadCSV, downloadXLSX } from './export.js';
@@ -153,6 +153,11 @@ async function init() {
       btnGpu.title = 'WebGPU not detected — click to try anyway (Chrome/Edge 113+ required)';
       btnGpu.style.opacity = '0.5';
     }
+
+    // Show download progress in the status bar
+    setProgressCallback(pct => {
+      if (pct > 0 && pct < 100) setStatus(`Downloading… ${pct}%`);
+    });
 
     setStatus('Loading MediaPipe…');
     await initFaceAligner('VIDEO');

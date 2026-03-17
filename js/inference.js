@@ -76,6 +76,49 @@ let _modelUrl  = null;   // URL of currently loaded model
 let _switching = false;   // true while a new session is being created
 let _seqNo     = 0;       // monotonic counter — detects superseded initModel calls
 let _diagCount = 0;
+let _onProgress = null;   // (pct: number) => void — download progress callback
+
+/** Register a download progress callback: fn(percent 0–100). */
+export function setProgressCallback(fn) { _onProgress = fn; }
+
+/**
+ * Fetch a URL as an ArrayBuffer with progress reporting.
+ * Falls back to plain fetch if Content-Length is unavailable.
+ */
+async function fetchWithProgress(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Fetch failed: ${url} (${res.status})`);
+
+  const total = parseInt(res.headers.get('Content-Length') ?? '0', 10);
+  if (!total || !res.body) {
+    // No Content-Length or no ReadableStream — fall back to plain fetch
+    _onProgress?.(0);
+    const buf = await res.arrayBuffer();
+    _onProgress?.(100);
+    return buf;
+  }
+
+  const reader = res.body.getReader();
+  const chunks = [];
+  let loaded = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    loaded += value.length;
+    _onProgress?.(Math.round((loaded / total) * 100));
+  }
+
+  // Combine chunks into single ArrayBuffer
+  const buf = new Uint8Array(loaded);
+  let offset = 0;
+  for (const chunk of chunks) {
+    buf.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return buf.buffer;
+}
 
 // ─── Preprocessing constants (overridden by config after load) ────────────────
 
@@ -161,8 +204,18 @@ export async function initModel(
     };
 
     const cropSize = newConfig.crop ?? 224;
-    console.log(`[inference] Creating ${provider} session for ${modelUrl.split('/').pop()}…`);
-    const newSession = await ort.InferenceSession.create(modelUrl, sessionOptions);
+    const fileName = modelUrl.split('/').pop();
+    console.log(`[inference] Downloading ${fileName}…`);
+    _onProgress?.(0);
+    const modelBuffer = await fetchWithProgress(modelUrl);
+
+    if (mySeq !== _seqNo) {
+      console.log('[inference] Superseded during download — aborting');
+      return _config;
+    }
+
+    console.log(`[inference] Creating ${provider} session for ${fileName}…`);
+    const newSession = await ort.InferenceSession.create(modelBuffer, sessionOptions);
 
     if (mySeq !== _seqNo) {
       console.log('[inference] Superseded — releasing newly created session');
