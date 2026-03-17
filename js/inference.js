@@ -43,7 +43,10 @@ async function _prepareWebGPUDevice() {
     console.log(`[inference] WebGPU adapter — maxStorageBuffers: ${adapterMax}`);
 
     if (adapterMax < 12) {
-      console.warn(`[inference] GPU only supports ${adapterMax} storage buffers (need ≥12). WebGPU may fail.`);
+      throw new Error(
+        `GPU only supports ${adapterMax} storage buffers per shader stage (ONNX Runtime needs ≥12). ` +
+        `This is a hardware limit of this GPU — WebGPU acceleration is not available.`
+      );
     }
 
     const device = await adapter.requestDevice({

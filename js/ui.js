@@ -654,7 +654,9 @@ async function switchProvider(p) {
     if (p === 'webgpu' && errMsg.includes('backend not found')) {
       hint = 'WebGPU not available — requires Chrome 113+ with DX12/Vulkan. Try chrome://flags/#enable-webgpu-developer-features';
     } else if (p === 'webgpu' && errMsg.includes('storage buffers')) {
-      hint = 'GPU has insufficient WebGPU storage buffer slots';
+      hint = 'This GPU lacks sufficient WebGPU resources — WebGPU not available on this device';
+    } else if (p === 'webgpu' && errMsg.includes('device creation failed')) {
+      hint = 'No compatible WebGPU GPU found';
     }
 
     btnGpu.title = hint;
