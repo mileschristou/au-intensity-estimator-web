@@ -645,6 +645,7 @@ async function switchProvider(p) {
     btnGpu.title = '';
     btnGpu.style.opacity = '';
     setProviderButtons(p);
+    buildRegressionPanel();   // rebuild in case panel was cleared
     setStatus(`Running on ${label}`);
   } catch (err) {
     console.warn(`[ui] ${label} failed:`, err);
