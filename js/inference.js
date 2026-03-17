@@ -146,18 +146,14 @@ export async function initModel(
   }
 
   // Build session options.
-  // For WebGPU: explicitly request CPU output location so ORT copies the result
-  // tensor back from GPU memory to a Float32Array before returning — without this,
-  // output.data may be a GPUBuffer rather than a typed array.
-  const sessionOptions = provider === 'webgpu'
-    ? {
-        executionProviders: [{ name: 'webgpu', preferredOutputLocation: 'cpu' }],
-        graphOptimizationLevel: 'all',
-      }
-    : {
-        executionProviders: [provider],
-        graphOptimizationLevel: 'all',
-      };
+  // preferredOutputLocation is a SESSION-level option (not an EP-level option).
+  // Setting it to 'cpu' forces ORT to copy output tensors from GPU → CPU before
+  // session.run() resolves, so output.data is a usable Float32Array.
+  const sessionOptions = {
+    executionProviders: [provider === 'webgpu' ? { name: 'webgpu' } : provider],
+    graphOptimizationLevel: 'all',
+    ...(provider === 'webgpu' && { preferredOutputLocation: 'cpu' }),
+  };
 
   let newSession;
   try {
@@ -165,7 +161,14 @@ export async function initModel(
     // Verify the session actually works end-to-end before committing.
     // This catches WebGPU failures that don't surface until the first run().
     const dummy = new ort.Tensor('float32', new Float32Array(3 * 224 * 224), [1, 3, 224, 224]);
-    await newSession.run({ input: dummy });
+    const testResults = await newSession.run({ input: dummy });
+    const testOutput = testResults['au_intensities'] ?? testResults[Object.keys(testResults)[0]];
+    if (testOutput) {
+      const testData = typeof testOutput.getData === 'function'
+        ? await testOutput.getData()
+        : testOutput.data;
+      console.log(`[inference] Verification run — provider: ${provider}, output location: ${testOutput.location ?? 'cpu'}, type: ${testOutput.type}, length: ${testData?.length}`);
+    }
   } catch (err) {
     // New session failed — restore previous state so the site keeps working
     _session  = prevSession;
@@ -263,21 +266,37 @@ export async function predict(alignedCanvas) {
     throw new Error(`Output 'au_intensities' not found. Available: ${keys.join(', ')}`);
   }
 
-  // Use getData() — the async API that explicitly downloads from GPU memory if
-  // the tensor is still on the GPU (output.data is synchronous and only works
-  // reliably for CPU tensors; on WebGPU it can silently return zeros or a buffer).
-  let raw;
-  if (typeof output.getData === 'function') {
-    raw = await output.getData();
-  } else {
-    raw = output.data;
+  // Read the output tensor — try multiple strategies to handle GPU tensors.
+  let data;
+  const loc = output.location ?? 'cpu';
+  const dtype = output.type ?? 'unknown';
+
+  try {
+    if (typeof output.getData === 'function') {
+      // Preferred: async download from GPU if needed
+      const raw = await output.getData();
+      data = raw instanceof Float32Array ? raw : new Float32Array(raw);
+    } else if (output.data instanceof Float32Array) {
+      data = output.data;
+    } else if (output.data) {
+      data = new Float32Array(output.data);
+    } else {
+      // Last resort: try cpuData property (some ORT versions)
+      data = output.cpuData instanceof Float32Array
+        ? output.cpuData
+        : new Float32Array(output.cpuData ?? []);
+    }
+  } catch (readErr) {
+    console.error('[inference] Failed to read output tensor:', readErr,
+      `location=${loc}, type=${dtype}, dims=${output.dims}`);
+    throw readErr;
   }
-  const data = raw instanceof Float32Array ? raw : new Float32Array(raw);
 
   // Periodic diagnostic — fires every 60 frames (~2 s at 30 fps)
   if (++_diagCount % 60 === 1) {
-    const max = Math.max(...data).toFixed(3);
-    console.log(`[inference] ${_provider} — max AU: ${max}, sample: [${Array.from(data.slice(0,4)).map(x=>x.toFixed(3)).join(', ')}]`);
+    const max = data.length > 0 ? Math.max(...data).toFixed(3) : 'EMPTY';
+    const sample = Array.from(data.slice(0, 4)).map(x => x.toFixed(3)).join(', ');
+    console.log(`[inference] ${_provider} | loc=${loc} type=${dtype} len=${data.length} | max=${max} sample=[${sample}]`);
   }
 
   return data.slice();
