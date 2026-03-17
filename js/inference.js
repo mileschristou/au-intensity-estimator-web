@@ -15,7 +15,7 @@
 
 import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.all.min.mjs';
 
-// Configure ONNX Runtime Web WASM paths (must point to CDN or local copy)
+// Configure ONNX Runtime Web WASM paths
 ort.env.wasm.wasmPaths =
   'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/';
 
@@ -29,6 +29,12 @@ export function setDeviceLostHandler(fn) { _deviceLostHandler = fn; }
 async function _prepareWebGPUDevice() {
   if (!('gpu' in navigator)) return false;
   try {
+    // Destroy any existing device before creating a new one (avoids stale device after crash)
+    if (ort.env.webgpu?.device) {
+      try { ort.env.webgpu.device.destroy(); } catch (_) { /* ok */ }
+      ort.env.webgpu.device = undefined;
+    }
+
     const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' })
                  ?? await navigator.gpu.requestAdapter();
     if (!adapter) return false;
@@ -37,13 +43,11 @@ async function _prepareWebGPUDevice() {
     console.log(`[inference] WebGPU adapter — maxStorageBuffers: ${adapterMax}`);
 
     if (adapterMax < 12) {
-      console.warn(`[inference] GPU only supports ${adapterMax} storage buffers (need ≥12 for ORT). WebGPU may fail.`);
+      console.warn(`[inference] GPU only supports ${adapterMax} storage buffers (need ≥12). WebGPU may fail.`);
     }
 
     const device = await adapter.requestDevice({
-      requiredLimits: {
-        maxStorageBuffersPerShaderStage: adapterMax,
-      },
+      requiredLimits: { maxStorageBuffersPerShaderStage: adapterMax },
     });
 
     device.lost.then(info => {
@@ -70,6 +74,7 @@ let _config    = null;   // parsed model_config.json
 let _provider  = null;   // 'webgpu' | 'wasm'
 let _modelUrl  = null;   // URL of currently loaded model
 let _switching = false;   // true while a new session is being created
+let _seqNo     = 0;       // monotonic counter — detects superseded initModel calls
 let _diagCount = 0;
 
 // ─── Preprocessing constants (overridden by config after load) ────────────────
@@ -87,6 +92,7 @@ const _resizeCtx    = _resizeCanvas.getContext('2d', { willReadFrequently: true 
 /**
  * Load the ONNX model and config JSON.
  * Safe to call multiple times — only reloads if provider or model changes.
+ * Uses a sequence counter so concurrent calls don't corrupt state.
  */
 export async function initModel(
   modelUrl,
@@ -96,15 +102,15 @@ export async function initModel(
 ) {
   if (_session && _provider === provider && _modelUrl === modelUrl) return _config;
 
+  const mySeq = ++_seqNo;   // capture our sequence number
   _switching = true;
 
-  // Keep the old session alive until the new one is confirmed working.
   const prevSession  = _session;
   const prevProvider = _provider;
   const prevConfig   = _config;
 
   try {
-    // Load config
+    // ── Load config ──
     let newConfig;
     try {
       const res = await fetch(configUrl);
@@ -125,11 +131,11 @@ export async function initModel(
       }
     }
 
-    // Apply preprocessing constants
-    RESIZE    = newConfig.resize ?? 256;
-    CROP      = newConfig.crop   ?? 224;
-    NORM_MEAN = newConfig.norm_mean ?? [0.485, 0.456, 0.406];
-    NORM_STD  = newConfig.norm_std  ?? [0.229, 0.224, 0.225];
+    // If another initModel call arrived while we were fetching, bail out
+    if (mySeq !== _seqNo) {
+      console.log('[inference] Superseded by newer initModel call — aborting');
+      return _config;
+    }
 
     // Clear dead GPU device when switching away from WebGPU
     if (provider !== 'webgpu' && ort.env.webgpu?.device) {
@@ -137,40 +143,57 @@ export async function initModel(
     }
 
     // Pre-create WebGPU device with maximal limits
-    if (provider === 'webgpu' && !ort.env.webgpu?.device) {
+    if (provider === 'webgpu') {
       const ok = await _prepareWebGPUDevice();
       if (!ok) throw new Error('WebGPU device creation failed — no compatible GPU adapter found');
     }
 
-    // Session options — preferredOutputLocation is session-level (per ORT docs)
+    if (mySeq !== _seqNo) {
+      console.log('[inference] Superseded by newer initModel call — aborting');
+      return _config;
+    }
+
+    // ── Create session ──
     const sessionOptions = {
       executionProviders: [provider === 'webgpu' ? { name: 'webgpu' } : provider],
       graphOptimizationLevel: 'all',
       ...(provider === 'webgpu' && { preferredOutputLocation: 'cpu' }),
     };
 
+    const cropSize = newConfig.crop ?? 224;
     console.log(`[inference] Creating ${provider} session for ${modelUrl.split('/').pop()}…`);
     const newSession = await ort.InferenceSession.create(modelUrl, sessionOptions);
 
-    // Verification run — confirm the session works end-to-end
-    const dummy = new ort.Tensor('float32', new Float32Array(3 * CROP * CROP), [1, 3, CROP, CROP]);
-    const testResults = await newSession.run({ input: dummy });
-    const testOutput = testResults['au_intensities'] ?? testResults[Object.keys(testResults)[0]];
+    if (mySeq !== _seqNo) {
+      console.log('[inference] Superseded — releasing newly created session');
+      try { await newSession.release(); } catch (_) {}
+      return _config;
+    }
 
+    // ── Verification run ──
+    const dummy = new ort.Tensor('float32', new Float32Array(3 * cropSize * cropSize), [1, 3, cropSize, cropSize]);
+    const testResults = await newSession.run({ input: dummy });
+    dummy.dispose();
+
+    const testOutput = testResults['au_intensities'] ?? testResults[Object.keys(testResults)[0]];
     if (testOutput) {
       const testData = typeof testOutput.getData === 'function'
         ? await testOutput.getData()
         : testOutput.data;
-      const loc = testOutput.location ?? 'cpu';
-      console.log(`[inference] Verification OK — provider: ${provider}, location: ${loc}, type: ${testOutput.type}, values: ${testData?.length}`);
-
-      // Dispose the test output tensor to free GPU memory
+      console.log(`[inference] Verification OK — provider: ${provider}, location: ${testOutput.location ?? 'cpu'}, type: ${testOutput.type}, values: ${testData?.length}`);
       if (typeof testOutput.dispose === 'function') testOutput.dispose();
     }
 
-    // Release the old session now that the new one is confirmed
+    if (mySeq !== _seqNo) {
+      console.log('[inference] Superseded — releasing newly created session');
+      try { await newSession.release(); } catch (_) {}
+      return _config;
+    }
+
+    // ── Commit: only now update all state atomically ──
+    // Release the old session
     if (prevSession && prevSession !== newSession) {
-      try { await prevSession.release(); } catch (_) { /* ok */ }
+      try { await prevSession.release(); } catch (_) {}
     }
 
     _session  = newSession;
@@ -178,17 +201,26 @@ export async function initModel(
     _modelUrl = modelUrl;
     _config   = newConfig;
 
+    // Update preprocessing constants only after session is confirmed
+    RESIZE    = newConfig.resize ?? 256;
+    CROP      = newConfig.crop   ?? 224;
+    NORM_MEAN = newConfig.norm_mean ?? [0.485, 0.456, 0.406];
+    NORM_STD  = newConfig.norm_std  ?? [0.229, 0.224, 0.225];
+
     console.log(`[inference] Model loaded — provider: ${provider}, AUs: ${_config.au_names}`);
     return _config;
 
   } catch (err) {
-    // Restore previous state so inference can continue
-    _session  = prevSession;
-    _provider = prevProvider;
-    _config   = prevConfig;
+    // Restore previous state only if we haven't been superseded
+    if (mySeq === _seqNo) {
+      _session  = prevSession;
+      _provider = prevProvider;
+      _config   = prevConfig;
+    }
     throw err;
   } finally {
-    _switching = false;
+    // Only clear the switching flag if we are still the active call
+    if (mySeq === _seqNo) _switching = false;
   }
 }
 
@@ -238,7 +270,13 @@ export async function predict(alignedCanvas) {
   if (!_session) throw new Error('Call initModel() before predict()');
 
   const inputTensor = preprocessCanvas(alignedCanvas);
-  const results     = await _session.run({ input: inputTensor });
+  let results;
+  try {
+    results = await _session.run({ input: inputTensor });
+  } finally {
+    // Always dispose the input tensor to free GPU memory
+    inputTensor.dispose();
+  }
 
   const output = results['au_intensities'];
   if (!output) {
@@ -246,7 +284,7 @@ export async function predict(alignedCanvas) {
     throw new Error(`Output 'au_intensities' not found. Available: ${keys.join(', ')}`);
   }
 
-  // Read output — getData() handles GPU→CPU transfer; .data is CPU-only
+  // Read output — getData() handles GPU→CPU transfer
   let data;
   try {
     if (typeof output.getData === 'function') {
@@ -261,20 +299,22 @@ export async function predict(alignedCanvas) {
     throw readErr;
   }
 
-  // CRITICAL: dispose output tensors to free GPU memory — without this,
-  // GPU buffers accumulate every frame and eventually crash the device.
+  // Copy data before disposing the output tensor
+  const result = data.slice();
+
+  // Dispose output tensor to free GPU memory
   if (typeof output.dispose === 'function') {
-    try { output.dispose(); } catch (_) { /* already disposed */ }
+    try { output.dispose(); } catch (_) {}
   }
 
   // Periodic diagnostic
   if (++_diagCount % 60 === 1) {
-    const max = data.length > 0 ? Math.max(...data).toFixed(3) : 'EMPTY';
-    const sample = Array.from(data.slice(0, 4)).map(x => x.toFixed(3)).join(', ');
-    console.log(`[inference] ${_provider} | len=${data.length} max=${max} sample=[${sample}]`);
+    const max = result.length > 0 ? Math.max(...result).toFixed(3) : 'EMPTY';
+    const sample = Array.from(result.slice(0, 4)).map(x => x.toFixed(3)).join(', ');
+    console.log(`[inference] ${_provider} | len=${result.length} max=${max} sample=[${sample}]`);
   }
 
-  return data.slice();
+  return result;
 }
 
 /**

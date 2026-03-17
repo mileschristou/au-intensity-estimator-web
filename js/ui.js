@@ -131,6 +131,12 @@ let lastT        = 0;
 let fps          = 0;
 let recording    = false;   // true while actively capturing frames to frameData
 let paused       = false;   // true while recording is paused
+let _providerSwitching = false;  // guard against concurrent provider switches
+let _modelSwitching    = false;  // guard against concurrent model switches
+
+// FPS ring buffer for smooth averaging
+const FPS_WINDOW = 20;
+let fpsHistory   = [];
 
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
 
@@ -243,9 +249,12 @@ function buildModelPanel() {
 }
 
 async function loadModel(key) {
+  if (_modelSwitching) return;   // prevent concurrent model switches
   if (key === activeModel && modelStatus[key] === 'active') return;
   const m = MODELS[key];
   if (!m || m.unavailable) return;
+
+  _modelSwitching = true;
 
   // Mark loading — DON'T stop the webcam; just let the loop skip inference
   // while the new model downloads (isReady() returns false during session rebuild).
@@ -262,20 +271,23 @@ async function loadModel(key) {
     modelStatus[key] = 'active';
     if (headerSubtitle) headerSubtitle.textContent = `/ ${m.label} · DISFA`;
 
-    setProviderButtons(provider);   // keep provider buttons in sync after model switch
+    setProviderButtons(provider);
     buildModelPanel();
     buildRegressionPanel();
     setStatus(`Model: ${m.label}`);
   } catch (err) {
-    modelStatus[key] = 'error';
+    // Reset to idle so the user can retry (not stuck in permanent 'error' state)
+    modelStatus[key] = 'idle';
     buildModelPanel();
     setStatus(`Failed to load ${m.label}: ${err.message}`);
     console.error(err);
-    // Restart previous model if needed
+    // Ensure we still have a working session
     if (!isReady()) {
       const prev = MODELS[activeModel];
-      await initModel(prev.modelUrl, prev.configUrl, provider).catch(() => {});
+      await initModel(prev.modelUrl, prev.configUrl, provider, prev.configInline).catch(() => {});
     }
+  } finally {
+    _modelSwitching = false;
   }
 }
 
@@ -394,6 +406,7 @@ imageInput.addEventListener('change', e => {
 async function handleImageFile(file) {
   const img = new Image();
   img.onload = async () => {
+    URL.revokeObjectURL(img.src);   // free blob URL
     uploadArea.classList.add('hidden');
     setStatus('Analysing…');
     ctx.drawImage(img, 0, 0, CANVAS_W, CANVAS_H);
@@ -442,8 +455,10 @@ async function videoLoop(now) {
   updateFPS(now);
 
   ctx.drawImage(uploadVideo, 0, 0, CANVAS_W, CANVAS_H);
-  const ts = uploadVideo.currentTime * 1000;
-  await processFrame(uploadVideo, uploadVideo.videoWidth, uploadVideo.videoHeight, now, ts);
+  if (isReady()) {
+    const ts = uploadVideo.currentTime * 1000;
+    await processFrame(uploadVideo, uploadVideo.videoWidth, uploadVideo.videoHeight, now, ts);
+  }
 
   requestAnimationFrame(videoLoop);
 }
@@ -607,19 +622,24 @@ function setProviderButtons(active) {
 }
 
 async function switchProvider(p) {
-  // Allow re-triggering same provider if session is dead (e.g. after GPU crash fallback)
+  if (_providerSwitching) return;   // prevent concurrent switches
   if (p === provider && isReady()) return;
+
+  _providerSwitching = true;
   const label = PROVIDER_LABELS[p] ?? p;
   setStatus(`Switching to ${label}…`);
-  setProviderButtons(p);
+
+  // Disable both buttons during switch — don't set active state optimistically
+  btnCpu.disabled = true;
+  btnGpu.disabled = true;
+
   try {
     const m = modelUrls();
     await initModel(m.modelUrl, m.configUrl, p, m.configInline);
     provider = p;
-    // Re-enable GPU button on successful switch (in case it was disabled by a prior failure)
-    btnGpu.disabled = false;
-    btnGpu.title    = '';
+    btnGpu.title = '';
     btnGpu.style.opacity = '';
+    setProviderButtons(p);
     setStatus(`Running on ${label}`);
   } catch (err) {
     console.warn(`[ui] ${label} failed:`, err);
@@ -629,19 +649,21 @@ async function switchProvider(p) {
     if (p === 'webgpu' && errMsg.includes('backend not found')) {
       hint = 'WebGPU not available — requires Chrome 113+ with DX12/Vulkan. Try chrome://flags/#enable-webgpu-developer-features';
     } else if (p === 'webgpu' && errMsg.includes('storage buffers')) {
-      hint = 'GPU has insufficient WebGPU storage buffer slots — this model requires a more capable GPU';
+      hint = 'GPU has insufficient WebGPU storage buffer slots';
     }
 
-    // Don't permanently disable the GPU button — let user retry after model switch
     btnGpu.title = hint;
     setProviderButtons(provider);
     setStatus(`${label} failed — using ${PROVIDER_LABELS[provider]}. ${hint}`);
 
-    // Ensure we still have a working session on the current provider
     if (!isReady()) {
       const m = modelUrls();
       await initModel(m.modelUrl, m.configUrl, provider, m.configInline).catch(console.error);
     }
+  } finally {
+    btnCpu.disabled = false;
+    btnGpu.disabled = false;
+    _providerSwitching = false;
   }
 }
 
@@ -703,15 +725,34 @@ function updateExportButtons() {
 function stopAll() {
   running = false;
   stopWebcam();
-  uploadVideo.pause();
-  uploadVideo.src = '';
+  if (uploadVideo.src) {
+    uploadVideo.pause();
+    URL.revokeObjectURL(uploadVideo.src);   // free blob URL
+    uploadVideo.src = '';
+  }
   lastT = 0;
   fps   = 0;
+  fpsHistory = [];
   fpsEl.textContent = 'FPS: --';
+
+  // Reset recording state so it doesn't persist across tab switches
+  recording = false;
+  paused    = false;
+  btnRecord.classList.remove('recording');
+  btnRecord.disabled = false;
+  btnPause.disabled  = true;
+  btnPause.textContent = '⏸ Pause';
+  btnStop.disabled   = true;
 }
 
 function updateFPS(now) {
-  if (lastT) fps = Math.round(1000 / (now - lastT));
+  if (lastT > 0) {
+    const delta = now - lastT;
+    fpsHistory.push(delta);
+    if (fpsHistory.length > FPS_WINDOW) fpsHistory.shift();
+    const avgDelta = fpsHistory.reduce((a, b) => a + b, 0) / fpsHistory.length;
+    fps = Math.round(1000 / avgDelta);
+  }
   lastT = now;
   fpsEl.textContent = `FPS: ${fps || '--'}`;
 }
