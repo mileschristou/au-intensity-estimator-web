@@ -156,11 +156,10 @@ async function init() {
       console.warn('[ui] GPU device lost — falling back to CPU');
       provider = 'wasm';
       setProviderButtons('wasm');
-      btnGpu.disabled = true;
-      btnGpu.title    = 'GPU device was lost — reload the page to retry WebGPU';
+      btnGpu.title = 'GPU device was lost — click to retry';
       setStatus('GPU device lost — switched to CPU');
       const m = modelUrls();
-      initModel(m.modelUrl, m.configUrl, 'wasm').catch(console.error);
+      initModel(m.modelUrl, m.configUrl, 'wasm', m.configInline).catch(console.error);
     });
 
     setStatus('Loading ResNet-18 (49 MB)…');
@@ -351,15 +350,14 @@ async function webcamLoop(now) {
       await processFrame(webcamVideo, webcamVideo.videoWidth, webcamVideo.videoHeight, now);
     } catch (err) {
       console.warn('[ui] processFrame error:', err);
-      // If GPU session crashes mid-run, trigger fallback and keep the loop alive
+      // If GPU session crashes mid-run, fall back to CPU but allow retry
       if (provider === 'webgpu') {
         provider = 'wasm';
         setProviderButtons('wasm');
-        btnGpu.disabled = true;
-        btnGpu.title    = 'WebGPU session crashed — reload the page to retry';
+        btnGpu.title = 'WebGPU session crashed — click to retry';
         setStatus('WebGPU crashed — switched to CPU');
         const m = modelUrls();
-        await initModel(m.modelUrl, m.configUrl, 'wasm').catch(console.error);
+        await initModel(m.modelUrl, m.configUrl, 'wasm', m.configInline).catch(console.error);
       }
     }
   }
@@ -616,8 +614,12 @@ async function switchProvider(p) {
   setProviderButtons(p);
   try {
     const m = modelUrls();
-    await initModel(m.modelUrl, m.configUrl, p);
+    await initModel(m.modelUrl, m.configUrl, p, m.configInline);
     provider = p;
+    // Re-enable GPU button on successful switch (in case it was disabled by a prior failure)
+    btnGpu.disabled = false;
+    btnGpu.title    = '';
+    btnGpu.style.opacity = '';
     setStatus(`Running on ${label}`);
   } catch (err) {
     console.warn(`[ui] ${label} failed:`, err);
@@ -625,16 +627,21 @@ async function switchProvider(p) {
 
     let hint = errMsg.slice(0, 140);
     if (p === 'webgpu' && errMsg.includes('backend not found')) {
-      hint = 'WebGPU not available on this device — requires Chrome 113+ with DX12/Vulkan GPU support. '
-           + 'Try chrome://flags/#enable-webgpu-developer-features';
+      hint = 'WebGPU not available — requires Chrome 113+ with DX12/Vulkan. Try chrome://flags/#enable-webgpu-developer-features';
+    } else if (p === 'webgpu' && errMsg.includes('storage buffers')) {
+      hint = 'GPU has insufficient WebGPU storage buffer slots — this model requires a more capable GPU';
     }
 
-    btnGpu.disabled = true;
-    btnGpu.title    = hint;
+    // Don't permanently disable the GPU button — let user retry after model switch
+    btnGpu.title = hint;
     setProviderButtons(provider);
-    setStatus(hint);
-    const m = modelUrls();
-    await initModel(m.modelUrl, m.configUrl, provider);
+    setStatus(`${label} failed — using ${PROVIDER_LABELS[provider]}. ${hint}`);
+
+    // Ensure we still have a working session on the current provider
+    if (!isReady()) {
+      const m = modelUrls();
+      await initModel(m.modelUrl, m.configUrl, provider, m.configInline).catch(console.error);
+    }
   }
 }
 
