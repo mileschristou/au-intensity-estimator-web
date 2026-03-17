@@ -163,10 +163,11 @@ export async function initModel(
     }
 
     // ── Create session ──
+    // WebGPU: use 'basic' optimization (aggressive fusion can break GPU memory tracking)
+    // and don't set preferredOutputLocation (let ORT manage output placement naturally)
     const sessionOptions = {
       executionProviders: [provider === 'webgpu' ? { name: 'webgpu' } : provider],
-      graphOptimizationLevel: 'all',
-      ...(provider === 'webgpu' && { preferredOutputLocation: 'cpu' }),
+      graphOptimizationLevel: provider === 'webgpu' ? 'basic' : 'all',
     };
 
     const cropSize = newConfig.crop ?? 224;
@@ -192,7 +193,6 @@ export async function initModel(
     // ── Verification run ──
     const dummy = new ort.Tensor('float32', new Float32Array(3 * cropSize * cropSize), [1, 3, cropSize, cropSize]);
     const testResults = await newSession.run({ input: dummy });
-    dummy.dispose();
 
     const testOutput = testResults['au_intensities'] ?? testResults[Object.keys(testResults)[0]];
     if (testOutput) {
@@ -200,8 +200,8 @@ export async function initModel(
         ? await testOutput.getData()
         : testOutput.data;
       console.log(`[inference] Verification OK — provider: ${provider}, location: ${testOutput.location ?? 'cpu'}, type: ${testOutput.type}, values: ${testData?.length}`);
-      if (typeof testOutput.dispose === 'function') testOutput.dispose();
     }
+    // Don't dispose dummy/testOutput — WebGPU backend may retain internal references
 
     if (mySeq !== _seqNo) {
       console.log('[inference] Superseded — releasing newly created session');
@@ -289,13 +289,7 @@ export async function predict(alignedCanvas) {
   if (!_session) throw new Error('Call initModel() before predict()');
 
   const inputTensor = preprocessCanvas(alignedCanvas);
-  let results;
-  try {
-    results = await _session.run({ input: inputTensor });
-  } finally {
-    // Always dispose the input tensor to free GPU memory
-    inputTensor.dispose();
-  }
+  const results = await _session.run({ input: inputTensor });
 
   const output = results['au_intensities'];
   if (!output) {
