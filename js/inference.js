@@ -163,10 +163,15 @@ export async function initModel(
     }
 
     // ── Create session ──
-    // WebGPU: disable all graph optimization — even 'basic' can rewrite the graph
-    // in ways that break ORT's GPU tensor lifetime tracking for large models (ViT-B).
+    // WebGPU: use NHWC layout (native for GPU compute shaders) and disable graph
+    // optimization to avoid ORT rewriting the graph in ways that break GPU tensor
+    // lifetime tracking.
     const sessionOptions = {
-      executionProviders: [provider === 'webgpu' ? { name: 'webgpu' } : provider],
+      executionProviders: [
+        provider === 'webgpu'
+          ? { name: 'webgpu', preferredLayout: 'NHWC' }
+          : provider
+      ],
       graphOptimizationLevel: provider === 'webgpu' ? 'disabled' : 'all',
     };
 
