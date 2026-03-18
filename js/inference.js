@@ -190,18 +190,7 @@ export async function initModel(
       return _config;
     }
 
-    // ── Verification run ──
-    const dummy = new ort.Tensor('float32', new Float32Array(3 * cropSize * cropSize), [1, 3, cropSize, cropSize]);
-    const testResults = await newSession.run({ input: dummy });
-
-    const testOutput = testResults['au_intensities'] ?? testResults[Object.keys(testResults)[0]];
-    if (testOutput) {
-      const testData = typeof testOutput.getData === 'function'
-        ? await testOutput.getData()
-        : testOutput.data;
-      console.log(`[inference] Verification OK — provider: ${provider}, location: ${testOutput.location ?? 'cpu'}, type: ${testOutput.type}, values: ${testData?.length}`);
-    }
-    // Don't dispose dummy/testOutput — WebGPU backend may retain internal references
+    console.log(`[inference] Session created OK — provider: ${provider}`);
 
     if (mySeq !== _seqNo) {
       console.log('[inference] Superseded — releasing newly created session');
