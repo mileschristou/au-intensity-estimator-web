@@ -26,6 +26,40 @@ let _deviceLostHandler = null;
 /** Register a callback for GPU device loss (e.g. to auto-switch to CPU). */
 export function setDeviceLostHandler(fn) { _deviceLostHandler = fn; }
 
+/**
+ * Monkey-patch GPUAdapter.requestDevice at MODULE LOAD TIME so that when
+ * ORT internally calls requestDevice (possibly cached from first session),
+ * it already gets maximum buffer-size limits.
+ *
+ * ORT ignores ort.env.webgpu.device and creates its own device with default
+ * limits (https://github.com/microsoft/onnxruntime/issues/26107).
+ */
+if ('gpu' in navigator && typeof GPUAdapter !== 'undefined') {
+  const _origRequestDevice = GPUAdapter.prototype.requestDevice;
+  GPUAdapter.prototype.requestDevice = async function (descriptor) {
+    descriptor = descriptor ?? {};
+    descriptor.requiredLimits = descriptor.requiredLimits ?? {};
+
+    const adapterLimits = this.limits;
+    const keys = [
+      'maxBufferSize',
+      'maxStorageBufferBindingSize',
+      'maxStorageBuffersPerShaderStage',
+      'maxUniformBufferBindingSize',
+    ];
+    for (const key of keys) {
+      if (adapterLimits[key] !== undefined) {
+        // Always override — even if ORT passes its own (default) limits
+        descriptor.requiredLimits[key] = adapterLimits[key];
+      }
+    }
+
+    console.log('[inference] Patched requestDevice — limits:', JSON.stringify(descriptor.requiredLimits));
+    return _origRequestDevice.call(this, descriptor);
+  };
+  console.log('[inference] WebGPU requestDevice monkey-patch installed');
+}
+
 /** Quick check: does this browser/GPU support WebGPU at all? */
 async function _checkWebGPUSupport() {
   if (!('gpu' in navigator)) {
@@ -37,42 +71,6 @@ async function _checkWebGPUSupport() {
     throw new Error('No WebGPU adapter found — GPU may not support WebGPU');
   }
   console.log(`[inference] WebGPU adapter OK — maxStorageBuffers: ${adapter.limits.maxStorageBuffersPerShaderStage}, maxBufferSize: ${adapter.limits.maxBufferSize}`);
-}
-
-/**
- * Monkey-patch GPUAdapter.requestDevice so that ORT's internally created
- * device gets higher buffer-size limits.  ORT ignores ort.env.webgpu.device
- * (https://github.com/microsoft/onnxruntime/issues/26107), so this is the
- * only way to raise maxBufferSize / maxStorageBufferBindingSize.
- *
- * The patch is installed once and stays active for the page lifetime.
- */
-let _gpuPatched = false;
-function _patchWebGPULimits() {
-  if (_gpuPatched || !('gpu' in navigator)) return;
-  _gpuPatched = true;
-
-  const origRequestDevice = GPUAdapter.prototype.requestDevice;
-  GPUAdapter.prototype.requestDevice = async function (descriptor) {
-    descriptor = descriptor ?? {};
-    descriptor.requiredLimits = descriptor.requiredLimits ?? {};
-
-    // Request the adapter's maximum for buffer sizes
-    const adapterLimits = this.limits;
-    const keys = [
-      'maxBufferSize',
-      'maxStorageBufferBindingSize',
-      'maxStorageBuffersPerShaderStage',
-    ];
-    for (const key of keys) {
-      if (adapterLimits[key] !== undefined && !(key in descriptor.requiredLimits)) {
-        descriptor.requiredLimits[key] = adapterLimits[key];
-      }
-    }
-
-    console.log('[inference] Patched requestDevice limits:', JSON.stringify(descriptor.requiredLimits));
-    return origRequestDevice.call(this, descriptor);
-  };
 }
 
 // ─── Module state ─────────────────────────────────────────────────────────────
@@ -191,7 +189,6 @@ export async function initModel(
     // Check WebGPU support before attempting a GPU session
     if (provider === 'webgpu') {
       await _checkWebGPUSupport();
-      _patchWebGPULimits();   // raise buffer-size limits before ORT creates its device
     }
 
     if (mySeq !== _seqNo) {
