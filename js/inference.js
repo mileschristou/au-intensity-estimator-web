@@ -36,7 +36,43 @@ async function _checkWebGPUSupport() {
   if (!adapter) {
     throw new Error('No WebGPU adapter found — GPU may not support WebGPU');
   }
-  console.log(`[inference] WebGPU adapter OK — maxStorageBuffers: ${adapter.limits.maxStorageBuffersPerShaderStage}`);
+  console.log(`[inference] WebGPU adapter OK — maxStorageBuffers: ${adapter.limits.maxStorageBuffersPerShaderStage}, maxBufferSize: ${adapter.limits.maxBufferSize}`);
+}
+
+/**
+ * Monkey-patch GPUAdapter.requestDevice so that ORT's internally created
+ * device gets higher buffer-size limits.  ORT ignores ort.env.webgpu.device
+ * (https://github.com/microsoft/onnxruntime/issues/26107), so this is the
+ * only way to raise maxBufferSize / maxStorageBufferBindingSize.
+ *
+ * The patch is installed once and stays active for the page lifetime.
+ */
+let _gpuPatched = false;
+function _patchWebGPULimits() {
+  if (_gpuPatched || !('gpu' in navigator)) return;
+  _gpuPatched = true;
+
+  const origRequestDevice = GPUAdapter.prototype.requestDevice;
+  GPUAdapter.prototype.requestDevice = async function (descriptor) {
+    descriptor = descriptor ?? {};
+    descriptor.requiredLimits = descriptor.requiredLimits ?? {};
+
+    // Request the adapter's maximum for buffer sizes
+    const adapterLimits = this.limits;
+    const keys = [
+      'maxBufferSize',
+      'maxStorageBufferBindingSize',
+      'maxStorageBuffersPerShaderStage',
+    ];
+    for (const key of keys) {
+      if (adapterLimits[key] !== undefined && !(key in descriptor.requiredLimits)) {
+        descriptor.requiredLimits[key] = adapterLimits[key];
+      }
+    }
+
+    console.log('[inference] Patched requestDevice limits:', JSON.stringify(descriptor.requiredLimits));
+    return origRequestDevice.call(this, descriptor);
+  };
 }
 
 // ─── Module state ─────────────────────────────────────────────────────────────
@@ -155,6 +191,7 @@ export async function initModel(
     // Check WebGPU support before attempting a GPU session
     if (provider === 'webgpu') {
       await _checkWebGPUSupport();
+      _patchWebGPULimits();   // raise buffer-size limits before ORT creates its device
     }
 
     if (mySeq !== _seqNo) {
@@ -163,16 +200,10 @@ export async function initModel(
     }
 
     // ── Create session ──
-    // WebGPU: use NHWC layout (native for GPU compute shaders) and disable graph
-    // optimization to avoid ORT rewriting the graph in ways that break GPU tensor
-    // lifetime tracking.
+    // WebGPU: use 'basic' optimization (aggressive fusion can break GPU memory tracking)
     const sessionOptions = {
-      executionProviders: [
-        provider === 'webgpu'
-          ? { name: 'webgpu', preferredLayout: 'NHWC' }
-          : provider
-      ],
-      graphOptimizationLevel: provider === 'webgpu' ? 'disabled' : 'all',
+      executionProviders: [provider === 'webgpu' ? { name: 'webgpu' } : provider],
+      graphOptimizationLevel: provider === 'webgpu' ? 'basic' : 'all',
     };
 
     const cropSize = newConfig.crop ?? 224;
