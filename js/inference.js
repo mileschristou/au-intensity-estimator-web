@@ -163,11 +163,11 @@ export async function initModel(
     }
 
     // ── Create session ──
-    // WebGPU: use 'basic' optimization (aggressive fusion can break GPU memory tracking)
-    // and don't set preferredOutputLocation (let ORT manage output placement naturally)
+    // WebGPU: disable all graph optimization — even 'basic' can rewrite the graph
+    // in ways that break ORT's GPU tensor lifetime tracking for large models (ViT-B).
     const sessionOptions = {
       executionProviders: [provider === 'webgpu' ? { name: 'webgpu' } : provider],
-      graphOptimizationLevel: provider === 'webgpu' ? 'basic' : 'all',
+      graphOptimizationLevel: provider === 'webgpu' ? 'disabled' : 'all',
     };
 
     const cropSize = newConfig.crop ?? 224;
